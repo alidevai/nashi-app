@@ -27,19 +27,32 @@ public sealed class GlobalDragController:IDisposable
     /// Those drags belong to window management and never carry files.
     private static bool InMoveSize(){var info=new GuiThreadInfo{Size=Marshal.SizeOf<GuiThreadInfo>()};return GetGUIThreadInfo(0,ref info)&&(info.Flags&0x2)!=0;}
     [DllImport("oleacc.dll")]private static extern int AccessibleObjectFromPoint(NativePoint point,[MarshalAs(UnmanagedType.Interface)]out object accessible,[MarshalAs(UnmanagedType.Struct)]out object child);
-    private readonly Window owner;private readonly PreferencesStore preferences;private readonly Action<string,IDataObject,string?> dropped;private readonly Action link;private readonly System.Windows.Threading.DispatcherTimer timer;
-    private NativePoint start;private bool down,opened;private Task<string?>? hint;private GlobalDropWheel? wheel;private HwndSource? source;private IntPtr handle;private bool? shortcutEnabled;
+    private readonly Window owner;private readonly PreferencesStore preferences;private readonly Action<string,IDataObject,string?> dropped;private readonly Action link;private readonly Action wheelCommand;private readonly Action<string>? shortcutNotice;private readonly System.Windows.Threading.DispatcherTimer timer;
+    private NativePoint start;private bool down,opened;private Task<string?>? hint;private GlobalDropWheel? wheel;private HwndSource? source;private IntPtr handle;private string? shortcutState;
     internal GlobalDropWheel? ActiveWheel=>wheel;
-    public bool LinkShortcutRegistered{get;private set;}
+    public bool LinkShortcutRegistered{get;private set;}public bool WheelShortcutRegistered{get;private set;}
     private bool OwnerAvailable=>DesktopGeometry.IsInteractive(owner);
-    public GlobalDragController(Window owner,PreferencesStore preferences,Action<string,IDataObject,string?> dropped,Action link)
+    public GlobalDragController(Window owner,PreferencesStore preferences,Action<string,IDataObject,string?> dropped,Action link,Action wheelCommand,Action<string>? shortcutNotice=null)
     {
-        this.owner=owner;this.preferences=preferences;this.dropped=dropped;this.link=link;timer=new(){Interval=TimeSpan.FromMilliseconds(40)};timer.Tick+=(_,_)=>Poll();
+        this.owner=owner;this.preferences=preferences;this.dropped=dropped;this.link=link;this.wheelCommand=wheelCommand;this.shortcutNotice=shortcutNotice;timer=new(){Interval=TimeSpan.FromMilliseconds(40)};timer.Tick+=(_,_)=>Poll();
         if(new WindowInteropHelper(owner).Handle!=IntPtr.Zero)Register();else owner.SourceInitialized+=(_,_)=>Register();timer.Start();
     }
     private void Register(){handle=new WindowInteropHelper(owner).Handle;source=HwndSource.FromHwnd(handle);source.AddHook(Hook);UpdateShortcut();}
-    private void UpdateShortcut(){if(handle==IntPtr.Zero)return;var enabled=preferences.Value.Enabled;if(shortcutEnabled==enabled)return;shortcutEnabled=enabled;if(LinkShortcutRegistered)UnregisterHotKey(handle,7701);LinkShortcutRegistered=enabled&&RegisterHotKey(handle,7701,0x4000|0x2|0x4,0x44);}
-    private IntPtr Hook(IntPtr window,int message,IntPtr w,IntPtr l,ref bool handled){if(message==0x0312&&w.ToInt32()==7701){if(preferences.Value.Enabled&&OwnerAvailable)link();handled=true;}return IntPtr.Zero;}
+    private void UpdateShortcut()
+    {
+        if(handle==IntPtr.Zero)return;var state=preferences.Value.Enabled+"|"+preferences.Value.GlobalWheelShortcut;if(state==shortcutState)return;shortcutState=state;
+        if(LinkShortcutRegistered){UnregisterHotKey(handle,7701);LinkShortcutRegistered=false;}if(WheelShortcutRegistered){UnregisterHotKey(handle,7702);WheelShortcutRegistered=false;}
+        var enabled=preferences.Value.Enabled;if(!enabled)return;
+        LinkShortcutRegistered=RegisterHotKey(handle,7701,0x4000|0x2|0x4,0x44);
+        if(Shortcut(preferences.Value.GlobalWheelShortcut) is {} chord)WheelShortcutRegistered=RegisterHotKey(handle,7702,0x4000|chord.Modifiers,chord.Key);
+        if(preferences.Value.GlobalWheelShortcut!="Off"&&!WheelShortcutRegistered)shortcutNotice?.Invoke("The global wheel shortcut is already in use. Choose another one in Settings.");
+    }
+    private static (uint Modifiers,uint Key)? Shortcut(string value)=>value switch
+    {
+        "Ctrl+Space"=>(0x2u,0x20u),"Ctrl+Shift+Space"=>(0x2u|0x4u,0x20u),"Ctrl+Alt+Space"=>(0x2u|0x1u,0x20u),
+        "Shift+Alt+Space"=>(0x4u|0x1u,0x20u),"Ctrl+Alt+W"=>(0x2u|0x1u,0x57u),_=>null
+    };
+    private IntPtr Hook(IntPtr window,int message,IntPtr w,IntPtr l,ref bool handled){if(message==0x0312&&w.ToInt32()==7701){if(preferences.Value.Enabled&&OwnerAvailable)link();handled=true;}else if(message==0x0312&&w.ToInt32()==7702){if(preferences.Value.Enabled&&OwnerAvailable)wheelCommand();handled=true;}return IntPtr.Zero;}
     private static bool Held(int key)=>(GetAsyncKeyState(key)&0x8000)!=0;
     private string Chord(){var parts=new List<string>();if(Held(0x11))parts.Add("Ctrl");if(Held(0x10))parts.Add("Shift");if(Held(0x12))parts.Add("Alt");return string.Join('+',parts);}
     private void Poll()
@@ -65,7 +78,7 @@ public sealed class GlobalDragController:IDisposable
             }
         }catch(ElementNotAvailableException){}catch(InvalidOperationException){}catch(COMException){}catch(System.Reflection.TargetInvocationException){}catch(MissingMethodException){}return null;
     }
-    public void Dispose(){timer.Stop();wheel?.Close();if(handle!=IntPtr.Zero)UnregisterHotKey(handle,7701);source?.RemoveHook(Hook);}
+    public void Dispose(){timer.Stop();wheel?.Close();if(handle!=IntPtr.Zero){UnregisterHotKey(handle,7701);UnregisterHotKey(handle,7702);}source?.RemoveHook(Hook);}
 }
 
 internal sealed class GlobalDropWheel:Window

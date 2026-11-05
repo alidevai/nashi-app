@@ -19,7 +19,7 @@ public sealed partial class MainWindow
     private TrayHost? tray;private bool quitting;
     private void SetupDesktop()
     {
-        globalDrag=new(this,preferences,OnGlobalDrop,OpenCopiedLink);
+        globalDrag=new(this,preferences,OnGlobalDrop,OpenCopiedLink,OpenWheelFromAnywhere,message=>L10n.SetText(status,message));
         try{tray=new(this,ShowMain,TrayMenu);}catch(InvalidOperationException error){L10n.SetText(status,error.Message);}
         Closing+=(_,e)=>{if(!e.Cancel&&tray is not null&&preferences.Value.KeepInTray&&!quitting){e.Cancel=true;Hide();}};
         // Without a tray icon (Explorer not ready at sign-in), a hidden Nashi could not be reached.
@@ -34,6 +34,12 @@ public sealed partial class MainWindow
     }
     private void ApplyPreferences(){L10n.Language=preferences.Value.Language;Feedback.Enabled=preferences.Value.Feedback;WheelPresentation.Preferences=preferences.Value;}
     private void ShowSettings(){new SettingsWindow(this,preferences,ApplyPreferences,()=>CheckUpdatesAsync(true),library).ShowDialog();appearance.SelectedItem=char.ToUpper(library.Appearance[0])+library.Appearance[1..];}
+    private void OpenWheelFromAnywhere()
+    {
+        // The global hotkey is delivered by Windows, so Nashi may be minimized or hidden in the
+        // tray. Bring the window forward first; ShowWheel needs an owner and the selected files.
+        Show();if(WindowState==WindowState.Minimized)WindowState=WindowState.Normal;Activate();if(!busy&&files.Count>0)ShowWheel();
+    }
     private void OpenCopiedLink()
     {
         if(busy)return;try{var payload=WebMediaPayload.Parse(Clipboard.GetText());if(payload is null){L10n.SetText(status,"Copy a public media link first.");return;}Show();if(WindowState==WindowState.Minimized)WindowState=WindowState.Normal;Activate();link.Text=payload.Url;SetDownloadKind(payload);OpenDownload();}catch(Exception error)when(ClipboardImport.IsClipboardError(error)){L10n.SetText(status,"Clipboard is busy. Try again.");}

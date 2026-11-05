@@ -39,8 +39,8 @@ internal static class GlobalGestureChecks
             File.WriteAllLines(Path.Combine(root,"explorer-windows.txt"),lastTitles);throw new Exception("Explorer did not expose its synthetic source file.");
         });
         var discoveryLimit=DateTime.UtcNow.AddSeconds(25);while(!discovery.IsCompleted&&DateTime.UtcNow<discoveryLimit)DesktopInput.Pump(30);if(!discovery.IsCompleted){DesktopCapture.Save(Path.Combine(root,"explorer-discovery.png"));throw new TimeoutException("Explorer UI Automation did not respond.");}if(discovery.IsFaulted)DesktopCapture.Save(Path.Combine(root,"explorer-discovery.png"));var fixture=discovery.GetAwaiter().GetResult();var handle=fixture.Handle;var bounds=fixture.Bounds;if(bounds.IsEmpty)throw new Exception("Explorer's source file has no visible bounds.");
-        var settings=new PreferencesStore(Path.Combine(root,"Gesture preferences"));string? selected=null;string[]? received=null;
-        using var controller=new GlobalDragController(owner,settings,(id,data,hint)=>{selected=id;received=data.GetData(DataFormats.FileDrop) as string[];},()=>selected="link-shortcut");
+        var settings=new PreferencesStore(Path.Combine(root,"Gesture preferences"));settings.Save(settings.Value with{GlobalWheelShortcut="Ctrl+Alt+W"});string? selected=null;string[]? received=null;var wheelShortcut=false;
+        using var controller=new GlobalDragController(owner,settings,(id,data,hint)=>{selected=id;received=data.GetData(DataFormats.FileDrop) as string[];},()=>selected="link-shortcut",()=>wheelShortcut=true);
         void Drag(Key modifier,string mode,string expected)
         {
             phase="dragging "+mode;selected=null;string? state=null;SetForegroundWindow(handle);DesktopInput.Pump(200);var start=new Point(bounds.Left+bounds.Width/2,bounds.Top+bounds.Height/2);
@@ -68,6 +68,7 @@ internal static class GlobalGestureChecks
             }
             finally{DesktopInput.HoldMouse(false);DesktopInput.Hold(Key.LeftShift,false);DesktopInput.Pump(250);plain.Close();}
             if(controller.LinkShortcutRegistered){DesktopInput.Key(owner,Key.D,control:true,shift:true);check(selected=="link-shortcut","Global copied-link shortcut Ctrl+Shift+D");}
+            var hotkeyHandle=new System.Windows.Interop.WindowInteropHelper(owner).Handle;check(controller.WheelShortcutRegistered,"Configured global wheel shortcut was not registered");PostMessage(hotkeyHandle,0x0312,(IntPtr)7702,IntPtr.Zero);DesktopInput.Pump(250);check(wheelShortcut,"Global wheel shortcut did not reach Nashi");
             var main=owner as MainWindow;var beforeLaunch=main?.SelectedFiles.ToArray();var modal=new Window{Owner=owner,Width=300,Height=200,WindowStartupLocation=WindowStartupLocation.CenterOwner,Content=new System.Windows.Controls.Border{Background=System.Windows.Media.Brushes.DarkOliveGreen}};Exception? modalError=null;
             modal.Dispatcher.BeginInvoke(()=>
             {
@@ -78,7 +79,9 @@ internal static class GlobalGestureChecks
                 catch(Exception error){modalError=error;}
                 finally{DesktopInput.HoldMouse(false);DesktopInput.Hold(Key.LeftShift,false);modal.Close();}
             });modal.ShowDialog();if(modalError is not null)throw modalError;if(main is not null){DesktopInput.Pump(300);check(main.SelectedFiles.SequenceEqual(new[]{file}),"Queued launch opened its file after the modal editor closed");main.AcceptLaunch(beforeLaunch!);}
-            settings.Save(settings.Value with{Enabled=false});selected="disabled";DesktopInput.Key(owner,Key.D,control:true,shift:true);check(selected=="disabled","Disabled global shortcuts ignored copied-link input");
+            settings.Save(settings.Value with{Enabled=false});selected="disabled";wheelShortcut=false;DesktopInput.Key(owner,Key.D,control:true,shift:true);check(selected=="disabled","Disabled global shortcuts ignored copied-link input");PostMessage(hotkeyHandle,0x0312,(IntPtr)7702,IntPtr.Zero);DesktopInput.Pump(250);check(!wheelShortcut,"Disabled global shortcuts still opened the wheel");
+            settings.Save(settings.Value with{Enabled=true,GlobalWheelShortcut="Ctrl+Shift+Space"});DesktopInput.Pump(300);check(controller.WheelShortcutRegistered&&controller.LinkShortcutRegistered,"Changing the global wheel shortcut did not re-register it live");
+            settings.Save(settings.Value with{GlobalWheelShortcut="Off"});DesktopInput.Pump(300);check(!controller.WheelShortcutRegistered&&controller.LinkShortcutRegistered,"Turning the global wheel shortcut off did not unregister only that hotkey");
             var data=new DataObject();using var stream=new MemoryStream(System.Text.Encoding.Unicode.GetBytes("https://www.instagram.com/p/FixtureCode/\0"));data.SetData("UniformResourceLocatorW",stream);check(DragPayload.Parse(data) is {Kind:"instagramPhotos"},"Browser URL stream was decoded as a photo post");
             data.SetData(DataFormats.Html,"<a href=\"https://www.instagram.com/reel/FixtureCode/\"><img src=\"https://cdn.example/preview.jpg\"></a>");check(DragPayload.Parse(data) is {Kind:"instagramReel"},"Browser HTML identified a reel without thumbnail actions");
         }
